@@ -1,4 +1,4 @@
-# Quarterly Burglary Prediction in Zug and St. Gallen
+# Burglary Prediction in Zug and St. Gallen
 
 This repository contains the code used to model and predict quarterly burglary counts across spatial grid cells in the Swiss cantons of Zug and St. Gallen. Burglary forecasting is reformulated as a quarterly spatial count prediction problem. The objective is to identify areas that consistently exhibit elevated risk and may therefore deserve greater preventive attention from police patrols.
 
