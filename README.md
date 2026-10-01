@@ -1,385 +1,85 @@
-# Quarterly Burglary Prediction in Zug
----
-###
-This repository contains the code used to model and predict quarterly burglary counts across spatial grid cells in the Swiss cantons of Zug. The project reformulates burglary forecasting from a sparse daily classification problem, with a very high imbalance ratio, into a quarterly spatial count prediction problem. The objective is to identify spatial areas that consistently exhibit elevated quarterly risk and may therefore deserve greater preventive attention from police officers and patrolling activities.
----
-## Research question
+# Quarterly Burglary Prediction in Zug and St. Gallen
 
-The main research question is:
+This repository contains the code used to model and predict quarterly burglary counts across spatial grid cells in the Swiss cantons of Zug and St. Gallen. Burglary forecasting is reformulated as a quarterly spatial count prediction problem. The objective is to identify areas that consistently exhibit elevated risk and may therefore deserve greater preventive attention from police patrols.
 
-> Does explicitly modelling overdispersion, nonlinear spatial patterns, and temporal (seasonal) persistence improve quarterly burglary hotspot identification in low-crime-density regions?
+## Approach
 
-The analysis compares three increasingly flexible count models:
+Three increasingly flexible specifications are compared:
 
-1. a Poisson Regression (benchmark);
-2. a Poisson Regression with temporal (seasonal) fixed effects;
-3. a Poisson Regression with spatio-temporal fixed effects.
+1. **MDL0**: covariates only (benchmark);
+2. **MDL1**: MDL0 plus seasonal fixed effects and a linear time trend;
+3. **MDL2**: MDL1 plus a quadratic spatial trend in the cell coordinates.
 
-The models are evaluated using:
+Each specification is estimated with a Poisson and a Negative Binomial likelihood (six candidate models per canton, `_NB` denoting the Negative Binomial version). The models are estimated separately for each canton and evaluated with AIC/BIC, crime capture (hit) rates, the Prediction Accuracy Index (PAI), and quarter-to-quarter hotspot stability (Jaccard index).
 
-- AIC and BIC;
-- out-of-sample MAE;
-- crime capture rates;
-- the Prediction Accuracy Index (PAI);
-- quarter-to-quarter hotspot stability.
+## Data and aggregation
 
----
-
-## Data structure
-
-The original dataset contains daily observations for spatial RELI grid cells.
-The daily observations are aggregated by RELI cell and calendar quarter:
+The original data contain daily observations for spatial RELI grid cells (100 m × 100 m) in both cantons. They are aggregated by cell $i$ and calendar quarter $t$:
 
 ```math
-Y_{it}
-=
-\sum_{d \in t}
-\mathrm{Burglary}_{id}
+Y_{it} = \sum_{d \in t} \mathrm{Burglary}_{id}
 ```
 
-where:
-
-- $i$ identifies a spatial RELI cell;
-- $t$ identifies a calendar quarter;
-- $Y_{it}$ is the number of recorded burglaries in cell $iä during quarter $t$.
-
-The quarterly dataset contains:
-
-- burglary counts;
-- spatial coordinates;
-- population density;
-- employment and business density;
-- temperature and precipitation;
-- calendar variables.
-
-The number of observed days in each RELI-quarter is included as an exposure term (offset of the Poisson regression).
----
-
-## Quarterly aggregation
-
-The main aggregation procedure is:
-
-```r
-df_q <- df %>%
-  mutate( date = as.Date(date),
-          quarter = lubridate::floor_date(date, unit = "quarter")
-  ) %>%
-  group_by(RELI, quarter) %>%
-  summarise(
-    y = sum(flag, na.rm = TRUE),
-
-    E_REFR = first(E_REFR),
-    N_REFR = first(N_REFR),
-
-    popdens      = mean(popdens, na.rm = TRUE),
-    swiss_pop    = mean(swiss_pop, na.rm = TRUE),
-    nonswiss_pop = mean(nonswiss_pop, na.rm = TRUE),
-    male_pop     = mean(male_pop, na.rm = TRUE),
-    female_pop   = mean(female_pop, na.rm = TRUE),
-
-    businesses   = mean(businesses, na.rm = TRUE),
-    empldens     = mean(empldens, na.rm = TRUE),
-
-    tavg = mean(tavg, na.rm = TRUE),
-    prcp = sum(prcp, na.rm = TRUE),
-
-    n_days = n_distinct(date),
-    .groups = "drop"
-
-  ) %>%
-  mutate( year = lubridate::year(quarter),
-          qtr = lubridate::quarter(quarter),
-          time_id = match(quarter, sort(unique(quarter)))
-)
-```
-
----
+The quarterly panel contains burglary counts, cell coordinates, population density, employment and business density, temperature, precipitation, and calendar variables. Covariates are averaged within the quarter (only precipitation is summed), and the number of observed days $n_{it}$ is kept as the exposure.
 
 ## Model specifications
 
-All three models use a Poisson likelihood for quarterly burglary counts and the same demographic, structural, and weather covariates.
-
-For RELI cell $i$ in quarter $t$,
+For cell $i$ in quarter $t$:
 
 ```math
-Y_{it}\mid X_{it}\sim Poisson(\mu_{it}),
-```
-
-with log link
-
-```math
+Y_{it}\mid X_{it}\sim \mathrm{Poisson}(\mu_{it}) \;\text{ or }\; \mathrm{NB}(\mu_{it}, \theta), \qquad
 \log(\mu_{it}) = \eta_{it} + \log(n_{it}),
 ```
 
-where $n_{it}$ is the number of observed days in the RELI-quarter. The term $\log(n_{it})$ is included as an offset, so the models account for differences in exposure.
+where $\log(n_{it})$ is an offset and, under the Negative Binomial, $\mathrm{Var}(Y_{it}) = \mu_{it} + \mu_{it}^2/\theta$ (smaller $\theta$ means stronger overdispersion). The covariates $X_{it}$ are population density, Swiss population, female population, number of businesses, employment density, average temperature, and cumulative precipitation.
 
-The common covariates are:
+| Model | Linear predictor $\eta_{it}$ |
+|---|---|
+| MDL0 | $\beta_0 + X_{it}'\beta$ |
+| MDL1 | $\beta_0 + \delta_{q(t)} + \beta_t t + X_{it}'\beta$ |
+| MDL2 | $\beta_0 + \delta_{q(t)} + \beta_t t + X_{it}'\beta + s_{\mathrm{quad}}(E_i, N_i)$ |
 
-- population density;
-- Swiss population;
-- female population;
-- number of businesses;
-- employment density;
-- average temperature;
-- cumulative precipitation.
-
-
----
-
-### MDL0: Non-spatial and non-temporal Poisson benchmark
-
-Quarterly burglary counts are modelled using only demographic, structural, and weather covariates:
+Here $\delta_{q(t)}$ are quarter-of-year fixed effects, $\beta_t t$ is a linear time trend, and
 
 ```math
-\log(\mu_{it})
-=
-\beta_0
-+
-X_{it}'\boldsymbol{\beta}
-+
-\log(n_{it}).
+s_{\mathrm{quad}}(E_i,N_i) = \gamma_1E_i + \gamma_2N_i + \gamma_3E_i^2 + \gamma_4N_i^2 + \gamma_5E_iN_i
 ```
 
----
-
-### MDL1: Poisson model with seasonal and linear temporal effects
-
-MDL1 extends the benchmark by adding:
-
-- quarter-of-year seasonal fixed effects;
-- a linear time trend.
-
-The model is
-
-```math
-\log(\mu_{it})
-=
-\beta_0
-+
-\delta_{q(t)}
-+
-\beta_t t
-+
-X_{it}'\boldsymbol{\beta}
-+
-\log(n_{it}).
-```
-
-where:
-
-- $\delta_{q(t)}$ captures differences between Q1, Q2, Q3, and Q4;
-- $\beta_t t$ captures an increase or decrease in burglary risk over the sample period.
-
----
-
-### MDL2: Poisson model with temporal effects and a quadratic spatial trend
-
-MDL2 adds a deterministic spatial component to MDL1 using the standardized geographic coordinates of each RELI cell.
-
-The model is
-
-```math
-\log(\mu_{it})
-=
-\beta_0
-+
-\delta_{q(t)}
-+
-\beta_t t
-+
-X_{it}'\boldsymbol{\beta}
-+
-s_{\mathrm{quad}}(E_i,N_i)
-+
-\log(n_{it}).
-```
-
-where
-
-```math
-s_{\mathrm{quad}}(E_i,N_i)
-=
-\gamma_1E_i
-+
-\gamma_2N_i
-+
-\gamma_3E_i^2
-+
-\gamma_4N_i^2
-+
-\gamma_5E_iN_i.
-```
-
-The linear coordinate terms allow risk to vary from east to west and from north to south. The squared and interaction terms allow the spatial surface to bend and capture broad geographic patterns.
-
-This model can represent:
-
-1. increasing risk toward one side of the study area;
-2. higher or lower risk around a central region;
-3. different spatial gradients across the canton.
-
----
-
-## Model hierarchy
-
-| Model | Temporal effects | Spatial effects |
-|---|---|---|
-| MDL0 | None explicitly modelled | None explicitly modelled |
-| MDL1 | Quarter fixed effects and linear time trend | None |
-| MDL2 | Quarter fixed effects and linear time trend | Quadratic function of coordinates |
+is a quadratic surface in the standardized coordinates, which captures broad east–west and north–south gradients and central high- or low-risk areas.
 
 ## Train-test design
 
-The models are evaluated using a chronological split:
+Chronological split: the first 80% of quarters are used for training and the final 20% for testing.
 
-- the first 80% of quarters are used for training;
-- the final 20% of quarters are used for testing.
+## Evaluation metrics
 
----
+- **Hit rate** at $k$: share of test-period burglaries that fall in the top $k$ share of cells ranked by predicted risk.
+- **PAI** at $k$: hit rate divided by the share of cells selected, i.e. how concentrated burglaries are in the predicted hotspots relative to a uniform allocation.
+- **Jaccard index**: overlap of the hotspot sets in consecutive quarters, $J_t = |H_t \cap H_{t-1}| / |H_t \cup H_{t-1}|$ (0 = no overlap, 1 = identical sets).
 
 ## Main results
 
-| Model | AIC | BIC | MAE | RMSE | Capture at 5% | PAI at 5% | Jaccard at 5% | Capture at 10% | PAI at 10% | Jaccard at 10% |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| MDL0 | 16854.20 | 16929.69 | 0.0238 | 0.1183 | 32.17% | 6.42 | 0.800 | 47.20% | 4.71 | 0.786 |
-| MDL1 | 16816.17 | 16929.41 | 0.0217 | 0.1181 | 32.87% | 6.56 | 0.926 | 46.85% | 4.68 | 0.913 |
-| MDL2 | **16484.03** | **16644.45** | **0.0215** | 0.1183 | **34.62%** | **6.91** | 0.925 | 46.15% | 4.61 | **0.919** |
+Best model per canton (selected by AIC) and its out-of-sample hotspot performance on the test quarters:
 
-### Main findings
+| Canton | Best model | $\theta$ | Dev. explained | AIC | BIC | Hit rate 5% | Hit rate 10% | PAI 5% | PAI 10% | Jaccard 5% | Jaccard 10% |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Zug | MDL2_NB | 0.338 | 17.4% | 16222.49 | 16392.38 | 33.7% | 45.6% | 6.74 | 4.55 | 0.959 | 0.962 |
+| St. Gallen | MDL2_NB | 0.304 | 18.0% | 61061.37 | 61265.84 | 27.9% | 42.5% | 5.58 | 4.25 | 0.918 | 0.927 |
 
-MDL2 provides the strongest overall statistical fit, with lower AIC and BIC values than the other specifications. Its main operational advantage emerges under some sort of resource constraints: (i) prioritizing only the top 5% of RELI cells captures approximately 34.6% of observed burglaries; (ii) the corresponding PAI is 6.91; (iii) the selected hotspot cells are highly stable across consecutive quarters (Jaccard at 5% is fairly high for MDL2 and MDL1).
+In both cantons the preferred specification is MDL2_NB: the Negative Binomial with seasonal, trend, and quadratic spatial terms. The estimated $\theta$ (about 0.30–0.34) indicates strong overdispersion, which a Poisson likelihood cannot accommodate. Under tight resource constraints, targeting only the top 5% of cells captures 33.7% of test-period burglaries in Zug and 27.9% in St. Gallen, corresponding to burglary concentrations about 6.7 and 5.6 times higher than under a uniform allocation. Extending coverage to 10% of cells raises the hit rate to 45.6% and 42.5%, respectively. Hotspot sets are highly stable from one quarter to the next (Jaccard above 0.91 in both cantons), pointing to a persistent core of high-risk areas.
 
-At the broader 10% threshold, the three models have similar capture rates. The Poisson benchmark achieves a small numerical advantage in crime capture, while MDL1 and MDL2 generate substantially more stable hotspot sets.
+## Relative-risk maps
 
----
+The map shows the predicted relative-risk percentile of each cell for one test quarter, for Zug (left) and St. Gallen (right).
 
-## Prediction Accuracy Index
-
-The Prediction Accuracy Index evaluates how concentrated crimes are within the predicted hotspot area.
-
-For a selected share $k$ of spatial cells:
-
-```math
-\mathrm{PAI}_{k}
-=
-\frac{\text{crime capture rate at }k}
-{\text{share of cells selected}}.
-```
-
-For example, MDL2 obtains:
-
-```math
-\mathrm{PAI}_{5\%}=6.91.
-```
-
-This means that the selected top 5% of cells contain burglaries at approximately 6.9 times the concentration expected under a uniform spatial allocation.
-
----
-
-## Jaccard hotspot stability
-
-The Jaccard index measures the overlap between hotspot sets in consecutive quarters:
-
-```math
-J_t
-=
-\frac{|H_t \cap H_{t-1}|}
-{|H_t \cup H_{t-1}|}.
-```
-
-where $H_t$ is the predicted hotspot set in quarter $t$.
-
-Interpretation:
-
-- $J=0$: no overlap;
-- $J=1$: identical hotspot sets.
-
-A high value therefore indicates stable priority areas.
-
-Interestingly, MDL1 and MDL2 produce average Jaccard values above 0.91, compared with approximately 0.79–0.80 for the benchmark.
-
-This indicates that the richer temporal and spatial specifications identify a persistent core of high-risk areas that does not change substantially from one quarter to the next.
-
----
-
-## Figures
-
-### Quarterly relative-risk maps
-
-The relative-risk percentile shows where each cell lies in the predicted risk ranking for the same model and quarter. A percentile of 0.95 means that the cell has a higher predicted count than approximately 95% of the other cells. It is, therefore, a relative ranking and should a 95% probability of burglary.
-
-![Quarterly relative-risk maps](figures/quarterly_relative_risk.png)
-
----
-
-### Quarterly hotspot maps
-
-The hotspot map is a categorical version of the relative-risk map, also potentially useful for policy. Cells are classified into groups such as:
-
-- other cells;
-- top 10%;
-- top 5%;
-- top 1%.
-
-This visualization is more directly connected to resource prioritization.
-
-![Quarterly hotspot maps](figures/quarterly_hotspots.png)
-
----
-
-### Jaccard stability over time
-
-The following figure reports the overlap between hotspot sets in consecutive quarters.
-
-![Jaccard stability over time](figures/jaccard_over_time.png)
-
----
-
-### Hotspot transitions
-
-Cells are classified according to their transition between consecutive quarters:
-
-- stayed hotspot;
-- entered hotspot;
-- left hotspot;
-- stayed outside the hotspot set.
-
-![Hotspot transitions](figures/hotspot_transitions.png)
-
----
-
-### Model summaries
-
-![Model comparison](figures/model_comparison.png)
-
----
-
-## Interpretation for policy
-
-Our proposed model (MDL2) is able to identify areas with relatively elevated expected quarterly counts. The results suggest two possible planning scenarios.
-
-### Highly constrained resources
-
-When preventive attention can cover only 5% of cells, MDL2 provides the strongest concentration of observed burglary events.
-
-### Broader preventive coverage
-
-When 10% of cells can be covered, the models have similar capture performance. In this case, the greater stability of MDL1 and MDL2 may be more useful than small differences in crime capture.
-
-Persistent hotspots may be relevant for:
-
-- preventive patrol planning;
-- environmental security assessments;
-- coordination with local authorities;
-- evaluation of persistent structural vulnerabilities.
-
----
+![Relative-risk maps for Zug and St. Gallen](figures/relative_risk_maps.png)
 
 ## Repository structure
 
 ```text
 .
 ├── README.md
+├── LICENSE
 ├── code
 │   ├── 01_data_aggregation.R
 │   ├── 02_covariate_creation.R
@@ -387,115 +87,27 @@ Persistent hotspots may be relevant for:
 │   ├── 04_model_evaluation.R
 │   ├── 05_hotspot_metrics.R
 │   └── 06_figures.R
-│
 ├── figures
-│   ├── quarterly_relative_risk.png
-│   ├── quarterly_hotspots.png
-│   ├── jaccard_over_time.png
-│   ├── hotspot_transitions.png
-│   └── model_comparison.png
-│
-├── output
-│   ├── model_comparison.csv
-│   ├── quarterly_predictions.csv
-│   └── hotspot_metrics.csv
-│
-└── poster
-│   └── EMS_2026.tex
-│
-└── paper
-    └── AGILE_2026.tex
+    └── relative_risk_maps.png
+
 ```
 
----
-
-## Required R packages
-
-The main packages are:
+## Requirements
 
 ```r
-required_packages <- c(
-  "dplyr",
-  "tidyr",
-  "purrr",
-  "lubridate",
-  "ggplot2",
-  "scales",
-  "MASS",
-  "mgcv",
-  "spdep",
-  "stargazer",
-  "knitr"
-)
-
-install.packages(
-  setdiff(
-    required_packages,
-    rownames(installed.packages())
-  )
-)
+required_packages <- c("dplyr", "tidyr", "purrr", "lubridate", "ggplot2", "scales",
+                       "MASS", "mgcv", "spdep", "stargazer", "knitr")
+install.packages(setdiff(required_packages, rownames(installed.packages())))
 ```
 
-Load the packages with:
+## Data availability
 
-```r
-library(dplyr)
-library(tidyr)
-library(purrr)
-library(lubridate)
-library(ggplot2)
-library(scales)
-library(MASS)
-library(mgcv)
-library(spdep)
-library(stargazer)
-library(knitr)
-```
-
----
-
-## Reproducing the analysis
-
-TODO: data
-
-
----
-
-## Limitations
-
----
-
-## Authors
-- Luca Persia
-- Eduardas Lazebnyj
-
-## Project Lead
-- Andrea Günster
-
-## Contributors
-- Damian Kozbur
-- Jérémy Decerle
-- Nicole Bellert
-- Felix (TODO: add Felix surname)
-
----
-
-## Related project
-
-This work is part of the research project:
-**Quantifying Illegal Activity: Estimating Dark Rates and Predicting Offenses**
-TODO: add previous working paper
-
----
+The data are not disclosed, as they are subject to a non-disclosure agreement (NDA). A synthetic dataset with the same structure can be provided upon request, so that the full pipeline can be run.
 
 ## Citation
 
-TODO: A citation entry will be added after publication.
-
-```
-
----
+A citation entry will be added after publication.
 
 ## License
 
-Code is released for academic and research purposes. Data are not directly available as they have been provided by LogObject AG and through an Innosuisse Grant "Quantifying Illegal Activity".
+The code is released under the [MIT License](LICENSE).
